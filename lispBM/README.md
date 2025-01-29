@@ -139,6 +139,20 @@ dev-1| a clear origin!
 
 ---
 
+#### set-fw-name
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(set-fw-name str)
+```
+
+Set (or override if already set in the firmware) firmware name. The firmware name is printed in the CAN-list in VESC Tool when it is set. It can also be used by packages to determine if they are compatible with the connected hardware.
+
+---
+
 #### timeout-reset
 
 | Platforms | Firmware |
@@ -271,7 +285,10 @@ Get value from BMS. Examples:
 (get-bms-val 'bms-hum) ; Humidity
 (get-bms-val 'bms-pres) ; Pressure in PA (Added in 6.05)
 (get-bms-val 'bms-temp-cell-max) ; Maximum cell temperature
+(get-bms-val 'bms-v-cell-min) ; Minimum cell voltage (added in 6.06)
+(get-bms-val 'bms-v-cell-max) ; Maximum cell voltage (added in 6.06)
 (get-bms-val 'bms-soc) ; State of charge (0.0 to 1.0)
+(get-bms-val 'bms-soh) ; State of health (0.0 to 1.0)
 (get-bms-val 'bms-can-id) ; CAN ID of BMS
 (get-bms-val 'bms-ah-cnt-chg-total) ; Total ah charged
 (get-bms-val 'bms-wh-cnt-chg-total) ; Total wh charged
@@ -279,7 +296,20 @@ Get value from BMS. Examples:
 (get-bms-val 'bms-wh-cnt-dis-total) ; Total wh discharged
 (get-bms-val 'bms-msg-age) ; Age of last message from BMS in seconds
 (get-bms-val 'bms-chg-allowed) ; Charging allowed (Added in 6.05, Express only)
+(get-bms-val 'bms-data-version) ; Data version (added in 6.06)
 ```
+
+**Note**  
+In firmware 6.06 the following temperature sensor convention was introduced for bms-temps-adc. So when using (get-bms-val 'bms-temps-adc 2) the maximum cell temperature should be returned. If a temperature returns less than -280 degC that reading is not applicable on that BMS. Keep in mind that it will take some time before all BMSes follow this convention after the 6.06 release. (get-bms-val 'bms-data-version) should return 1 if this convention is used.
+
+| Sensor Index | Function |
+|---|---|
+| 0 | Balance IC |
+| 1 | Cell Min |
+| 2 | Cell Max |
+| 3 | Mosfet Switch |
+| 4 | Ambient Temperature |
+| 5+ | Optional sensors |
 
 ---
 
@@ -359,6 +389,36 @@ Start or stop balancing. 1 means start and 0 means stop.
 ```
 
 Zero current measurement offset on BMS. Has to be done while no current (or charge-current on charge-only BMS) is flowing. Will be sent to every BMS on the CAN-bus.
+
+---
+
+#### bms-st
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(bms-st can-id)
+```
+
+Run self-test on BMS with can-id. Returns the following list on success, otherwise timeout:
+
+```clj
+(
+    1 ; Balance IC OK
+    1 ; Balamce connection check OK
+    8 ; Cell num (8 Cells)
+    (1 3.691400f32 3.561700f32) ; Cell 1 OK, V_BAL, V_NO_BAL
+    (1 3.687200f32 3.367500f32) ; Cell 2 OK, V_BAL, V_NO_BAL
+    (1 3.687500f32 3.377500f32) ; Cell 3 OK, V_BAL, V_NO_BAL
+    (1 3.688900f32 3.389400f32) ; Cell 4 OK, V_BAL, V_NO_BAL
+    (1 3.690100f32 3.401900f32) ; Cell 5 OK, V_BAL, V_NO_BAL
+    (1 3.688800f32 3.413800f32) ; Cell 6 OK, V_BAL, V_NO_BAL
+    (1 3.689000f32 3.424600f32) ; Cell 7 OK, V_BAL, V_NO_BAL
+    (1 3.688900f32 3.433300f32) ; Cell 8 OK, V_BAL, V_NO_BAL
+)
+```
 
 ---
 
@@ -677,10 +737,11 @@ Read system info parameter param. Example:
 (sysinfo 'uuid) ; STM32 UUID. ESC only.
 (sysinfo 'runtime) ; Total runtime in seconds. ESC only.
 (sysinfo 'odometer) ; Total odometer in meters. ESC only. Added in 6.06.
-(sysinfo 'git-branch) ; Git branch name. ESC only.
-(sysinfo 'git-hash) ; Git hash of current commit. ESC only.
+(sysinfo 'git-branch) ; Git branch name.
+(sysinfo 'git-hash) ; Git hash of current commit.
 (sysinfo 'compiler) ; GCC version, e.g. 7.3.1. ESC only.
 (sysinfo 'hw-type) ; Hardware type, e.g. hw-express. Added in 6.02.
+(sysinfo 'part-running) ; Running partition name. Express only.
 ```
 
 ---
@@ -794,6 +855,22 @@ Returns true when the main-function is done with all initialization.
 ```
 
 Hold shutdown. When hold is true hardware shutdown will be delayed until hold is set to false again. Can be used when catching a shutdown-event if more time is needed for cleanup.
+
+---
+
+#### const-heap-erase
+
+| Platforms | Firmware |
+|---|---|
+| ESC | 6.06+ |
+
+```clj
+(const-heap-erase)
+```
+
+Erase constant heap. This can be used in the beginning of the application to erase the constant memory of the application. That is useful for applications that do not always write the same things to constant memory in the same order after starting. Situations where that can occur is when the application takes different execution paths depending on external events or when writing variables to constant memory that differ based on external events.
+
+Running this command in the beginning of the application should prevent any write-to-flash errors, but the command takes a few seconds to execute and puts some wear on the flash memory. The reader will become slightly slower in const blocks after running this command compared to an application where constant memory already has been written in previous runs.
 
 ---
 
@@ -2208,6 +2285,28 @@ Actively scan the CAN-bus and return a list with devices that responded. This fu
 
 ---
 
+#### can-ping
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(can-ping id)
+```
+
+Ping can-device with id. Valid IDs are 0 to 253. If the device responds 0, 1 or 2 is returned, meaning
+
+| Response | HW Type |
+|---|---|
+| 0 | ESC |
+| 1 | Old BMS |
+| 2 | Custom (e.g. Express or new BMS) |
+
+If the device does not respond nil is returned.
+
+---
+
 #### can-local-id
 
 | Platforms | Firmware |
@@ -2219,6 +2318,25 @@ Actively scan the CAN-bus and return a list with devices that responded. This fu
 ```
 
 Get local CAN ID.
+
+---
+
+#### can-update-baud
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(can-update-baud kbits)
+```
+
+Update CAN baudrate locally and on connected CAN-devices. kbits is the new baudrate. Note that this is only supported when all CAN-devices have firmware 6.06 or later. If the update fails the CAN-bus can become unusable until the settings are restored manually on each device. Valid baudrates in kbits are 125, 250, 500, 1000, 10, 20, 50, 75 and 100. Example:
+
+```clj
+(can-update-baud 1000) ; Update baudrate to 1 MBit/s
+(can-update-baud 250) ; Update baudrate to 250 KBit/s
+```
 
 ---
 
@@ -3565,6 +3683,7 @@ The following selection of app and motor parameters can be read and set from Lis
                         ;    9: APP_PAS
                         ;    10: APP_ADC_PAS
 'controller-id          ; VESC CAN ID
+'timeout-msec           ; Motor timeout in milliseconds (Added in FW 6.06)
 'can-baud-rate          ; CAN-bus baud rate (Added in FW 6.05)
                         ; 0: 125K
                         ; 1: 250K
@@ -3877,7 +3996,7 @@ Get all overridden current limits from speed, temperature, voltage, wattage etc.
 
 ### EEPROM (Nonvolatile Storage)
 
-Up to 128 variables (int32 or float) can be stored in a nonvolatile memory reserved for LispBM. These variables persist between power cycles and configuration changes, but not between firmware updates. Keep in mind that the motor will be stopped briefly when writing them and that they only can be written a limited number of times (about 100 000 writes) before wear on the flash memory starts to become an issue.
+Up to 128 (256 in FW 6.06) variables (int32 or float) can be stored in a nonvolatile memory reserved for LispBM. These variables persist between power cycles and configuration changes, but not between firmware updates. Keep in mind that the motor will be stopped briefly when writing them and that they only can be written a limited number of times (about 100 000 writes) before wear on the flash memory starts to become an issue.
 
 ---
 
@@ -4633,6 +4752,24 @@ Replace every occurrence of rep in str with optWith. If optWith is omitted every
 > "Hello!"
 ```
 
+---
+
+### str-replicate
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.00+ |
+
+```clj
+(str-replicate n char)
+```
+
+Build a string by replicating char n times.
+
+Example:
+```clj
+(str-replicate 8 \#x)
+> "xxxxxxxx"
+```
 ---
 
 #### str-to-upper
@@ -5412,6 +5549,79 @@ Lowering this value is useful if there are one or more timing-critical threads (
 ```
 
 Change the stack size for the garbage collector. If the GC stack is too small the program can crash during garbage collection and print a message stating that it ran out of GC stack. If that happens increasing the size from the default of 160 can help. Note that the GC stack is on LBM memory and increasing its size leaves less memory available for other things.
+
+---
+
+## Mutexes
+
+Mutexes can be used to lock resources from other contexts. Example:
+
+
+```clj
+(def mtx (mutex-create))
+
+(defun print-numbers() {
+        (mutex-lock mtx)
+        (print 1)
+        (sleep 0.5)
+        (print 2)
+        (sleep 0.5)
+        (print 3)
+        (sleep 0.5)
+        (print 4)
+        (mutex-unlock mtx)
+})
+
+(spawn 100 print-numbers)
+(sleep 0.1)
+(spawn 100 print-numbers)
+(sleep 0.1)
+(spawn 100 print-numbers)
+(sleep 0.1)
+(spawn 100 print-numbers)
+```
+
+---
+
+#### mutex-create
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(mutex-create)
+```
+
+Creates a mutex object. The mutex object is a dotted pair (ls . last) which contains two references into a single list, implementing a O(1)-insert-last O(1)-remove-first queue. At the surface though, it is a regular lisp dotted pair that can be destroyed with standard lisp functionality, no protection!
+
+---
+
+#### mutex-lock
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(mutex-lock mtx)
+```
+
+Lock mutex mtx. If mtx already is locked the current context will sleep until it is unlocked.
+
+---
+
+#### mutex-unlock
+
+| Platforms | Firmware |
+|---|---|
+| ESC, Express | 6.06+ |
+
+```clj
+(mutex-unlock mtx)
+```
+
+Unlock mutex mtx. If one or more contexts are waiting on this mutex the next one in the waiting queue will be unblocked.
 
 ---
 
@@ -6310,6 +6520,20 @@ Rename file (same as moving a file). Returns true on success, nil otherwise.
 
 ---
 
+#### f-sync
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(f-sync file)
+```
+
+Write buffered changes to the memory card.
+
+---
+
 #### f-fatinfo
 
 | Platforms | Firmware |
@@ -6374,6 +6598,39 @@ Write data to firmware-buffer at offset. Returns true on success or nil/timeout 
 ```
 
 Reboot and attempt to load the new firmware from the firmware-buffer using the bootloader. This function always returns true as there is no easy way to get the response from the bootloader. If the optional argument optCanId is omitted or set to -1 the command is performed locally, otherwise it is performed on the CAN-device with id optCanId.
+
+---
+
+#### fw-info
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(fw-info optCanId)
+```
+
+Get an assoc-list containing information about the VESC version number and git commit hashes. If optCanId is `-1` or not given the local device is queried. If the target device does not run a recent enough firmware that supports this, or if the CAN bus is otherwise non-functional, this function will timeout after 2 seconds returning the symbol `timeout`.
+
+The returned assoc-list has the following structure:
+
+```
+(
+    ('version . (majorNumber minorNumber))
+    ('test-version . number)
+    ('commit . str)
+    ('user-commit . str-or-nil)
+)
+```
+
+The test versions exact semantics depend on which firmware is running on the queried device, but on bldc for instance it is the beta version number. The user commit hash can be configured when you are compiling any of the VESC firmwares yourself, and is useful when you have a separate project that is using any of the VESC firmwares as a dependency, you can then configure it to be the commit of said project. If it was not configured when building it is instead set to `nil`. Unfortunately there is currently no documentation written anywhere for how to set it, [but here are the relevant lines of code in bldc's makefile](../Makefile#L167-L172), and [here they are in vesc_express's CMake configuration](https://github.com/vedderb/vesc_express/blob/main/CMakeLists.txt#L32-L37). Similar [flags exist for vesc_bms_fw](https://github.com/vedderb/vesc_bms_fw/blob/main/Makefile#L32-L37) and [vesc_gpstm](https://github.com/vedderb/vesc_gpstm/blob/main/Makefile#L31-L36).
+
+Example where we queried a bldc unit with the CAN id 10 running a development build of v6.6 beta 3:
+```clj
+(fw-info 10)
+> ((version 6u 6u) (test-version . 3u) (commit . "4f2df650c4ed6d820657217e966d1dbd6c2c01e6") (user-commit . nil))
+```
 
 ---
 
@@ -6494,7 +6751,7 @@ Write data to qml-buffer at offset. Returns true on success or nil/timeout on fa
 (lbm-run running optCanId)
 ```
 
-Run or stop the lbm-code (run if running is 1, stop otherwise). Returns true on success or nil/timeout on failure. If the optional argument optCanId is omitted or set to -1 the command is performed locally, otherwise it is performed on the CAN-device with id optCanId.
+Run or stop the lbm-code (run if running is 1, stop otherwise). Returns true on success or nil/timeout on failure. If the optional argument optCanId is omitted or set to -1 the command is performed locally, otherwise it is performed on the CAN-device with id optCanId. If running is set to 1 and LispBM already is running a restart is performed.
 
 ---
 
@@ -6550,6 +6807,7 @@ Creates an LED-buffer for num-leds leds. The optional argument optLedType specif
 | 1 | RGB |
 | 2 | GRBW |
 | 3 | RGBW |
+| 4 | WRGB |
 
 The optional argument optGammaCorr can be set to enable gamma correction for this LED-buffer. Gamma correction makes the brightness non-linear matching the response of human eyes. Generally that makes colors look better and it is something that all monitors do. The downside is that fewer distinct colors are available as not all bits can be used.
 
@@ -7034,7 +7292,21 @@ Returns a 4k byte array from RTC memory that can be used as a general purpose ar
 Check if any client (e.g. VESC Tool) is connected over wifi. Returns true when connected, nil otherwise.
 
 ---
-´
+
+#### connected-hub
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(connected-hub)
+```
+
+Check if we are connected to the TCP hub. Returns true when connected, nil otherwise. Notice that this does not tell if someone is connected to us using the hub, it only tells that we are connected to the hub and that others can connect to us.
+
+---
+
 #### connected-ble
 
 | Platforms | Firmware |
@@ -7060,6 +7332,96 @@ Check if any client (e.g. VESC Tool) is connected over ble. Returns true when co
 ```
 
 Check if any client (e.g. VESC Tool) is connected over usb. Returns true when connected, nil otherwise.
+
+---
+
+## Non-Volatile Storage (NVS) on QML Partition
+
+The QML-partition on the ESP32 can be used to store non-volatile data as key-values. Note that QML-data cannot be stored as usual when using the QML-partition as NVS.
+
+---
+
+#### nvs-qml-erase
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(nvs-qml-erase)
+```
+
+Erase all data on QML-partition.
+
+---
+
+#### nvs-qml-init
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(nvs-qml-init)
+```
+
+Initialize the QML-partition with the NVS-module. This has to be done before further NVS-operations can be used. If needed, the QML-partition will be erased; this can happen if other data is stored on the QML-partition that is incompatible with the NVS-module.
+
+---
+
+#### nvs-qml-read
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(nvs-qml-read key)
+```
+
+Read key from QML-partition, return the content as a byte array. This can fail if key does not exist or if (nvs-qml-init) has not been run.
+
+---
+
+#### nvs-qml-write
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(nvs-qml-write key data)
+```
+
+Write data to key on QML-partition. If key already exists the old data will be replaced. This can fail if (nvs-qml-init) has not been run or if there is not enough space.
+
+---
+
+#### nvs-qml-erase-key
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(nvs-qml-erase-key key)
+```
+
+Erase single key from QML-partition. This can fail if key does not exist or if (nvs-qml-init) has not been run.
+
+---
+
+#### nvs-qml-list
+
+| Platforms | Firmware |
+|---|---|
+| Express | 6.06+ |
+
+```clj
+(nvs-qml-list)
+```
+
+Returns a list with all existing NVS keys. If (nvs-qml-init) has not been run this always returns nil.
 
 ---
 

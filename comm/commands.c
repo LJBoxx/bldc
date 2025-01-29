@@ -1403,6 +1403,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 #ifdef USE_LISPBM
 		if (packet_id == COMM_LISP_ERASE_CODE) {
 			lispif_restart(false, false, false);
+			flash_helper_erase_code(CODE_IND_LISP_CONST);
 		}
 #endif
 
@@ -1601,6 +1602,44 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		}
 	} break;
 
+	case COMM_FW_INFO: {
+		// Write at most the first max_len characters of str into buffer,
+		// followed by a null byte.
+		void buffer_append_str_max_len(uint8_t *buffer, char *str, size_t max_len, int32_t *index) {
+			size_t str_len = strlen(str);
+			if (str_len > max_len) {
+				str_len = max_len;
+				return;
+			}
+			
+			memcpy(&buffer[*index], str, str_len);
+			*index += str_len;
+			buffer[(*index)++] = '\0';
+		}
+		
+		int32_t ind = 0;
+		uint8_t send_buffer[98];
+		
+		send_buffer[ind++] = COMM_FW_INFO;
+		
+		// This information is technically duplicated with COMM_FW_VERSION, but
+		// I don't care.
+		send_buffer[ind++] = FW_VERSION_MAJOR;
+		send_buffer[ind++] = FW_VERSION_MINOR;
+		send_buffer[ind++] = FW_TEST_VERSION_NUMBER;
+		
+		// We don't include the branch name unfortunately
+		buffer_append_str_max_len(send_buffer, GIT_COMMIT_HASH, 46, &ind);
+#ifdef USER_GIT_COMMIT_HASH
+		char *user_commit_hash = USER_GIT_COMMIT_HASH;
+#else
+		char *user_commit_hash = "";
+#endif
+		buffer_append_str_max_len(send_buffer, user_commit_hash, 46, &ind);
+
+		reply_func(send_buffer, ind);
+	} break;
+
 	// Blocking commands. Only one of them runs at any given time, in their
 	// own thread. If other blocking commands come before the previous one has
 	// finished, they are discarded.
@@ -1624,6 +1663,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	case COMM_BM_MEM_READ:
 	case COMM_GET_IMU_CALIBRATION:
 	case COMM_BM_MEM_WRITE:
+	case COMM_CAN_UPDATE_BAUD_ALL:
 		if (!is_blocking) {
 			memcpy(blocking_thread_cmd_buffer, data - 1, len + 1);
 			blocking_thread_cmd_len = len + 1;
@@ -1837,6 +1877,7 @@ void commands_apply_mcconf_hw_limits(mc_configuration *mcconf) {
 
 	float ctrl_loop_freq = 0.0;
 
+#if FOC_CONTROL_LOOP_FREQ_DIVIDER < 2 // When skipping cycles you are on your own!
 	// This limit should always be active, as starving the threads never
 	// makes sense.
 #ifdef HW_LIM_FOC_CTRL_LOOP_FREQ
@@ -1853,6 +1894,7 @@ void commands_apply_mcconf_hw_limits(mc_configuration *mcconf) {
 		ctrl_loop_freq = mcconf->foc_f_zv / 2.0;
 #endif
     }
+#endif
 #endif
 
     if (ctrl_loop_freq >= (hw_lim_upper(HW_LIM_FOC_CTRL_LOOP_FREQ) * 0.9)) {
@@ -2411,6 +2453,33 @@ static THD_FUNCTION(blocking_thread, arg) {
 			buffer_append_float32(send_buffer, imu_cal[7], 1e6, &ind);
 			buffer_append_float32(send_buffer, imu_cal[8], 1e6, &ind);
 
+			if (send_func_blocking) {
+				send_func_blocking(send_buffer, ind);
+			}
+		} break;
+
+		case COMM_CAN_UPDATE_BAUD_ALL: {
+			int32_t ind = 0;
+			uint32_t kbits = buffer_get_int16(data, &ind);
+			uint32_t delay_msec = buffer_get_int16(data, &ind);
+
+			CAN_BAUD baud = comm_can_kbits_to_baud(kbits);
+			if (baud != CAN_BAUD_INVALID) {
+				for (int i = 0;i < 10;i++) {
+					comm_can_send_update_baud(kbits, delay_msec);
+					chThdSleepMilliseconds(50);
+				}
+
+				comm_can_set_baud(baud, delay_msec);
+
+				app_configuration *appconf = (app_configuration*)app_get_configuration();
+				appconf->can_baud_rate = baud;
+				conf_general_store_app_configuration(appconf);
+			}
+
+			ind = 0;
+			send_buffer[ind++] = packet_id;
+			send_buffer[ind++] = baud != CAN_BAUD_INVALID;
 			if (send_func_blocking) {
 				send_func_blocking(send_buffer, ind);
 			}

@@ -33,15 +33,18 @@
 #include "lbm_prof.h"
 #include "utils.h"
 
-#define LBM_MEMORY_SIZE_18K LBM_MEMORY_SIZE_64BYTES_TIMES_X(256 + 32)
-#define LBM_MEMORY_BITMAP_SIZE_18K LBM_MEMORY_BITMAP_SIZE(256 + 32)
+#define LBM_MEMORY_SIZE_28K LBM_MEMORY_SIZE_64BYTES_TIMES_X(448)
+#define LBM_MEMORY_BITMAP_SIZE_28K LBM_MEMORY_BITMAP_SIZE(448)
 
-#define HEAP_SIZE					(2048 + 256 + 160)
-#define LISP_MEM_SIZE				LBM_MEMORY_SIZE_18K
-#define LISP_MEM_BITMAP_SIZE		LBM_MEMORY_BITMAP_SIZE_18K
+#ifndef EXTENSION_STORAGE_SIZE
+#define EXTENSION_STORAGE_SIZE		300
+#endif
+
+#define HEAP_SIZE					(((1024 * 24) - (EXTENSION_STORAGE_SIZE * sizeof(lbm_extension_t))) / sizeof(lbm_cons_t))
+#define LISP_MEM_SIZE				LBM_MEMORY_SIZE_28K
+#define LISP_MEM_BITMAP_SIZE		LBM_MEMORY_BITMAP_SIZE_28K
 #define GC_STACK_SIZE				160
 #define PRINT_STACK_SIZE			128
-#define EXTENSION_STORAGE_SIZE		298
 #define EXT_LOAD_CALLBACK_LEN		20
 #define PROF_DATA_NUM				30
 
@@ -60,10 +63,11 @@ static bool string_tok_valid = false;
 
 static lbm_const_heap_t const_heap;
 static lbm_uint *const_heap_ptr = 0;
+static lbm_uint const_heap_max_ind = 0;
 
 static thread_t *eval_tp = 0;
 static THD_FUNCTION(eval_thread, arg);
-static THD_WORKING_AREA(eval_thread_wa, 2048);
+__attribute__((section(".ram4"))) static THD_WORKING_AREA(eval_thread_wa, 2048);
 static volatile bool lisp_thd_running = false;
 static mutex_t lbm_mutex;
 
@@ -334,6 +338,7 @@ void lispif_process_cmd(unsigned char *data, unsigned int len,
 				commands_printf_lisp("Recovered arrays: %u\n", lbm_heap_state.gc_recovered_arrays);
 				commands_printf_lisp("Marked: %d\n", lbm_heap_state.gc_marked);
 				commands_printf_lisp("GC SP max: %u (size %u)\n", lbm_get_max_stack(&lbm_heap_state.gc_stack), lbm_heap_state.gc_stack.size);
+				commands_printf_lisp("Global env cells: %u\n", lbm_get_global_env_size());
 				commands_printf_lisp("--(Symbol and Array memory)--\n");
 				commands_printf_lisp("Memory size: %u bytes\n", lbm_memory_num_words() * 4);
 				commands_printf_lisp("Memory free: %u bytes\n", lbm_memory_num_free() * 4);
@@ -699,8 +704,6 @@ bool lispif_restart(bool print, bool load_code, bool load_imports) {
 			ext_load_callbacks[i]();
 		}
 
-		lbm_set_dynamic_load_callback(lispif_vesc_dynamic_loader);
-
 		int code_chars = 0;
 		if (code_data) {
 			code_chars = strnlen(code_data, code_len);
@@ -710,12 +713,9 @@ bool lispif_restart(bool print, bool load_code, bool load_imports) {
 			code_data = (char*)flash_helper_code_data_raw(CODE_IND_LISP);
 		}
 
-		const_heap_ptr = (lbm_uint*)(code_data + code_len + 16);
-		const_heap_ptr = (lbm_uint*)((uint32_t)const_heap_ptr & 0xFFFFFFF4);
-		if (((uint32_t)code_data + 1024 * 128) > (uint32_t)const_heap_ptr) {
-			uint32_t const_heap_len = ((uint32_t)code_data + 1024 * 128) - (uint32_t)const_heap_ptr;
-			lbm_const_heap_init(const_heap_write, &const_heap, const_heap_ptr, const_heap_len);
-		}
+		const_heap_max_ind = 0;
+		const_heap_ptr = (lbm_uint*)flash_helper_code_data_raw(CODE_IND_LISP_CONST);
+		lbm_const_heap_init(const_heap_write, &const_heap, const_heap_ptr, 1024 * 128);
 
 		// Load imports
 		if (load_imports) {
@@ -770,6 +770,10 @@ void lispif_add_ext_load_callback(void (*p_func)(void)) {
 	}
 }
 
+lbm_uint lispif_const_heap_max_ind(void)  {
+	return const_heap_max_ind;
+}
+
 static uint32_t timestamp_callback(void) {
 	systime_t t = chVTGetSystemTimeX();
 	return (uint32_t) ((1000000 / CH_CFG_ST_FREQUENCY) * t);
@@ -780,6 +784,10 @@ static void sleep_callback(uint32_t us) {
 }
 
 static bool const_heap_write(lbm_uint ix, lbm_uint w) {
+	if (ix > const_heap_max_ind) {
+		const_heap_max_ind = ix;
+	}
+
 	if (const_heap_ptr[ix] == w) {
 		return true;
 	}

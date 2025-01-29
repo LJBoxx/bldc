@@ -26,6 +26,8 @@
 #include "extensions/array_extensions.h"
 #include "extensions/math_extensions.h"
 #include "extensions/string_extensions.h"
+#include "extensions/mutex_extensions.h"
+#include "extensions/lbm_dyn_lib.h"
 #include "lbm_constants.h"
 #include "lbm_vesc_utils.h"
 
@@ -57,6 +59,7 @@
 #include "shutdown.h"
 #include "app.h"
 #include "comm_usb.h"
+#include "flash_helper.h"
 
 #include <math.h>
 #include <ctype.h>
@@ -80,6 +83,8 @@ typedef struct {
 	lbm_uint hum;
 	lbm_uint pres;
 	lbm_uint temp_max_cell;
+	lbm_uint v_cell_min;
+	lbm_uint v_cell_max;
 	lbm_uint soc;
 	lbm_uint soh;
 	lbm_uint can_id;
@@ -88,6 +93,8 @@ typedef struct {
 	lbm_uint ah_cnt_dis_total;
 	lbm_uint wh_cnt_dis_total;
 	lbm_uint msg_age;
+	lbm_uint chg_allowed;
+	lbm_uint data_version;
 
 	// GPIO
 	lbm_uint pin_mode_out;
@@ -195,6 +202,7 @@ typedef struct {
 	lbm_uint min_speed;
 	lbm_uint max_speed;
 	lbm_uint controller_id;
+	lbm_uint timeout_msec;
 	lbm_uint can_baud_rate;
 	lbm_uint can_status_rate_1;
 	lbm_uint can_status_msgs_r1;
@@ -292,6 +300,10 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("bms-pres", comp);
 		} else if (comp == &syms_vesc.temp_max_cell) {
 			lbm_add_symbol_const("bms-temp-cell-max", comp);
+		} else if (comp == &syms_vesc.v_cell_min) {
+			lbm_add_symbol_const("bms-v-cell-min", comp);
+		} else if (comp == &syms_vesc.v_cell_max) {
+			lbm_add_symbol_const("bms-v-cell-max", comp);
 		} else if (comp == &syms_vesc.soc) {
 			lbm_add_symbol_const("bms-soc", comp);
 		} else if (comp == &syms_vesc.soh) {
@@ -308,6 +320,12 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("bms-wh-cnt-dis-total", comp);
 		} else if (comp == &syms_vesc.msg_age) {
 			lbm_add_symbol_const("bms-msg-age", comp);
+		} else if (comp == &syms_vesc.msg_age) {
+			lbm_add_symbol_const("bms-msg-age", comp);
+		} else if (comp == &syms_vesc.chg_allowed) {
+			lbm_add_symbol_const("bms-chg-allowed", comp);
+		} else if (comp == &syms_vesc.data_version) {
+			lbm_add_symbol_const("bms-data-version", comp);
 		}
 
 		else if (comp == &syms_vesc.pin_mode_out) {
@@ -516,6 +534,8 @@ static bool compare_symbol(lbm_uint sym, lbm_uint *comp) {
 			lbm_add_symbol_const("max-speed", comp);
 		} else if (comp == &syms_vesc.controller_id) {
 			lbm_add_symbol_const("controller-id", comp);
+		} else if (comp == &syms_vesc.timeout_msec) {
+			lbm_add_symbol_const("timeout-msec", comp);
 		} else if (comp == &syms_vesc.can_baud_rate) {
 			lbm_add_symbol_const("can-baud-rate", comp);
 		} else if (comp == &syms_vesc.can_status_rate_1) {
@@ -850,6 +870,10 @@ static lbm_value get_set_bms_val(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &val->pressure, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.temp_max_cell)) {
 		res = get_or_set_float(set, &val->temp_max_cell, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.v_cell_min)) {
+		res = get_or_set_float(set, &val->v_cell_min, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.v_cell_max)) {
+		res = get_or_set_float(set, &val->v_cell_max, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.soc)) {
 		res = get_or_set_float(set, &val->soc, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.soh)) {
@@ -864,6 +888,10 @@ static lbm_value get_set_bms_val(bool set, lbm_value *args, lbm_uint argn) {
 		res = get_or_set_float(set, &val->ah_cnt_dis_total, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.wh_cnt_dis_total)) {
 		res = get_or_set_float(set, &val->wh_cnt_dis_total, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.chg_allowed)) {
+		res = get_or_set_i(set, &val->is_charge_allowed, &set_arg);
+	} else if (compare_symbol(name, &syms_vesc.data_version)) {
+		res = get_or_set_i(set, &val->data_version, &set_arg);
 	} else if (compare_symbol(name, &syms_vesc.msg_age)) {
 		res = lbm_enc_float(UTILS_AGE_S(val->update_time));
 	}
@@ -1266,7 +1294,7 @@ static lbm_value ext_get_remote_state(lbm_value *args, lbm_uint argn) {
 }
 
 static bool check_eeprom_addr(int addr) {
-	if (addr < 0 || addr > 127) {
+	if (addr < 0 || addr >= EEPROM_VARS_CUSTOM) {
 		return false;
 	}
 
@@ -1500,6 +1528,30 @@ static lbm_value ext_can_cmd(lbm_value *args, lbm_uint argn) {
 static lbm_value ext_can_local_id(lbm_value *args, lbm_uint argn) {
 	(void)args; (void)argn;
 	return lbm_enc_i(app_get_configuration()->controller_id);
+}
+
+static lbm_value ext_can_update_baud(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN(1);
+
+	int kbits = lbm_dec_as_i32(args[0]);
+
+	CAN_BAUD baud = comm_can_kbits_to_baud(kbits);
+	if (baud != CAN_BAUD_INVALID) {
+		for (int i = 0;i < 10;i++) {
+			comm_can_send_update_baud(kbits, 1000);
+			chThdSleepMilliseconds(50);
+		}
+
+		comm_can_set_baud(baud, 1000);
+
+		app_configuration *appconf = (app_configuration*)app_get_configuration();
+		appconf->can_baud_rate = baud;
+		conf_general_store_app_configuration(appconf);
+
+		return ENC_SYM_TRUE;
+	} else {
+		return ENC_SYM_TERROR;
+	}
 }
 
 // App set commands
@@ -2458,6 +2510,20 @@ static lbm_value ext_can_scan(lbm_value *args, lbm_uint argn) {
 	}
 
 	return dev_list;
+}
+
+static lbm_value ext_can_ping(lbm_value *args, lbm_uint argn) {
+	LBM_CHECK_ARGN_NUMBER(1);
+
+	int id = lbm_dec_as_i32(args[0]);
+	if (id < 0 || id > 253) {
+		return ENC_SYM_TERROR;
+	}
+
+	HW_TYPE hw = HW_TYPE_VESC;
+	bool res = comm_can_ping(id, &hw);
+
+	return res ? lbm_enc_i(hw) : ENC_SYM_NIL;
 }
 
 static lbm_value ext_can_send(lbm_value *args, lbm_uint argn, bool is_eid) {
@@ -3460,6 +3526,10 @@ static lbm_value ext_conf_set(lbm_value *args, lbm_uint argn) {
 	} else if (compare_symbol(name, &syms_vesc.controller_id)) {
 		appconf->controller_id = lbm_dec_as_i32(args[1]);
 		changed_app = 1;
+	} else if (compare_symbol(name, &syms_vesc.timeout_msec)) {
+		appconf->timeout_msec = lbm_dec_as_i32(args[1]);
+		timeout_configure(appconf->timeout_msec, appconf->timeout_brake_current, appconf->kill_sw_mode);
+		changed_app = 1;
 	} else if (compare_symbol(name, &syms_vesc.can_status_rate_1)) {
 		appconf->can_status_rate_1 = lbm_dec_as_u32(args[1]);
 		changed_app = 1;
@@ -3920,6 +3990,8 @@ static lbm_value ext_conf_get(lbm_value *args, lbm_uint argn) {
 		res = lbm_enc_float(mcconf->l_max_erpm / speed_fact);
 	} else if (compare_symbol(name, &syms_vesc.controller_id)) {
 		res = lbm_enc_i(appconf->controller_id);
+	} else if (compare_symbol(name, &syms_vesc.timeout_msec)) {
+		res = lbm_enc_i(appconf->timeout_msec);
 	} else if (compare_symbol(name, &syms_vesc.can_baud_rate)) {
 		res = lbm_enc_i(appconf->can_baud_rate);
 	} else if (compare_symbol(name, &syms_vesc.can_status_rate_1)) {
@@ -4284,210 +4356,6 @@ static lbm_value ext_conf_get_limits(lbm_value *args, lbm_uint argn) {
 	res = lbm_cons(lbm_enc_float(conf->lo_current_max), res);
 	res = lbm_cons(lbm_enc_float(conf->lo_current_min), res);
 	return res;
-}
-
-static lbm_value make_list(int num, ...) {
-	va_list arguments;
-	va_start (arguments, num);
-	lbm_value res = ENC_SYM_NIL;
-	for (int i = 0; i < num; i++) {
-		res = lbm_cons(va_arg(arguments, lbm_value), res);
-	}
-	va_end (arguments);
-	return lbm_list_destructive_reverse(res);
-}
-
-static lbm_uint sym_res;
-static lbm_uint sym_loop;
-static lbm_uint sym_break;
-static lbm_uint sym_brk;
-static lbm_uint sym_rst;
-static lbm_uint sym_return;
-
-static lbm_value ext_me_defun(lbm_value *argsi, lbm_uint argn) {
-	if (argn != 3) {
-		return ENC_SYM_TERROR;
-	}
-
-	lbm_value name = argsi[0];
-	lbm_value args = argsi[1];
-	lbm_value body = argsi[2];
-
-	// (define name (lambda args body))
-
-	return make_list(3,
-			lbm_enc_sym(SYM_DEFINE),
-			name,
-			make_list(3,
-					lbm_enc_sym(SYM_LAMBDA),
-					args,
-					body));
-}
-
-static lbm_value ext_me_defunret(lbm_value *argsi, lbm_uint argn) {
-	if (argn != 3) {
-		return ENC_SYM_EERROR;
-	}
-
-	lbm_value name = argsi[0];
-	lbm_value args = argsi[1];
-	lbm_value body = argsi[2];
-
-	// (def name (lambda args (call-cc (lambda (return) body))))
-
-	return make_list(3,
-			lbm_enc_sym(SYM_DEFINE),
-			name,
-			make_list(3,
-					lbm_enc_sym(SYM_LAMBDA),
-					args,
-					make_list(2,
-							lbm_enc_sym(SYM_CALLCC),
-							make_list(3,
-									lbm_enc_sym(SYM_LAMBDA),
-									make_list(1, lbm_enc_sym(sym_return)),
-									body))));
-}
-
-static lbm_value ext_me_loopfor(lbm_value *args, lbm_uint argn) {
-	if (argn != 5) {
-		return ENC_SYM_EERROR;
-	}
-
-	lbm_value it = args[0];
-	lbm_value start = args[1];
-	lbm_value cond = args[2];
-	lbm_value update = args[3];
-	lbm_value body = args[4];
-
-	// (let ((loop (lambda (it res break) (if cond (loop update body break) res)))) (call-cc (lambda (brk) (loop start nil brk))))
-
-	return make_list(3,
-			lbm_enc_sym(SYM_LET),
-			make_list(1,
-					make_list(2,
-							lbm_enc_sym(sym_loop),
-							make_list(3,
-									lbm_enc_sym(SYM_LAMBDA),
-									make_list(3, it, lbm_enc_sym(sym_res), lbm_enc_sym(sym_break)),
-									make_list(4,
-											lbm_enc_sym(SYM_IF),
-											cond,
-											make_list(4, lbm_enc_sym(sym_loop), update, body, lbm_enc_sym(sym_break)),
-											lbm_enc_sym(sym_res))))),
-											make_list(2,
-													lbm_enc_sym(SYM_CALLCC),
-													make_list(3,
-															lbm_enc_sym(SYM_LAMBDA),
-															make_list(1, lbm_enc_sym(sym_brk)),
-															make_list(4, lbm_enc_sym(sym_loop), start, ENC_SYM_NIL, lbm_enc_sym(sym_brk)))));
-}
-
-static lbm_value ext_me_loopwhile(lbm_value *args, lbm_uint argn) {
-	if (argn != 2) {
-		return ENC_SYM_EERROR;
-	}
-
-	lbm_value cond = args[0];
-	lbm_value body = args[1];
-
-	// (let ((loop (lambda (res break) (if cond (loop body break) res)))) (call-cc (lambda (brk) (loop nil brk))))
-
-	return make_list(3,
-			lbm_enc_sym(SYM_LET),
-			make_list(1,
-					make_list(2,
-							lbm_enc_sym(sym_loop),
-							make_list(3,
-									lbm_enc_sym(SYM_LAMBDA),
-									make_list(2, lbm_enc_sym(sym_res), lbm_enc_sym(sym_break)),
-									make_list(4,
-											lbm_enc_sym(SYM_IF),
-											cond,
-											make_list(3, lbm_enc_sym(sym_loop), body, lbm_enc_sym(sym_break)),
-											lbm_enc_sym(sym_res))))),
-											make_list(2,
-													lbm_enc_sym(SYM_CALLCC),
-													make_list(3,
-															lbm_enc_sym(SYM_LAMBDA),
-															make_list(1, lbm_enc_sym(sym_brk)),
-															make_list(3, lbm_enc_sym(sym_loop), ENC_SYM_NIL, lbm_enc_sym(sym_brk)))));
-}
-
-static lbm_value ext_me_looprange(lbm_value *args, lbm_uint argn) {
-	if (argn != 4) {
-		return ENC_SYM_EERROR;
-	}
-
-	lbm_value it = args[0];
-	lbm_value start = args[1];
-	lbm_value end = args[2];
-	lbm_value body = args[3];
-
-	// (let ((loop (lambda (it res break) (if (< it end) (loop (+ it 1) body break) res)))) (call-cc (lambda (brk) (loop start nil brk))))
-
-	return make_list(3,
-			lbm_enc_sym(SYM_LET),
-			make_list(1,
-					make_list(2,
-							lbm_enc_sym(sym_loop),
-							make_list(3,
-									lbm_enc_sym(SYM_LAMBDA),
-									make_list(3, it, lbm_enc_sym(sym_res), lbm_enc_sym(sym_break)),
-									make_list(4,
-											lbm_enc_sym(SYM_IF),
-											make_list(3, lbm_enc_sym(SYM_LT), it, end),
-											make_list(4, lbm_enc_sym(sym_loop), make_list(3, lbm_enc_sym(SYM_ADD), it, lbm_enc_i(1)), body, lbm_enc_sym(sym_break)),
-											lbm_enc_sym(sym_res))))),
-											make_list(2,
-													lbm_enc_sym(SYM_CALLCC),
-													make_list(3,
-															lbm_enc_sym(SYM_LAMBDA),
-															make_list(1, lbm_enc_sym(sym_brk)),
-															make_list(4, lbm_enc_sym(sym_loop), start, ENC_SYM_NIL, lbm_enc_sym(sym_brk)))));
-}
-
-static lbm_value ext_me_loopforeach(lbm_value *args, lbm_uint argn) {
-	if (argn != 3) {
-		return ENC_SYM_EERROR;
-	}
-
-	lbm_value it = args[0];
-	lbm_value lst = args[1];
-	lbm_value body = args[2];
-
-	// (let ((loop (lambda (it rst res break) (if (eq it nil) res (loop (car rst) (cdr rst) body break))))) (call-cc (lambda (brk) (loop (car lst) (cdr lst) nil brk))))
-
-	return make_list(3,
-			lbm_enc_sym(SYM_LET),
-			make_list(1,
-					make_list(2,
-							lbm_enc_sym(sym_loop),
-							make_list(3,
-									lbm_enc_sym(SYM_LAMBDA),
-									make_list(4, it, lbm_enc_sym(sym_rst), lbm_enc_sym(sym_res), lbm_enc_sym(sym_break)),
-									make_list(4,
-											lbm_enc_sym(SYM_IF),
-											make_list(3, lbm_enc_sym(SYM_EQ), it, ENC_SYM_NIL),
-											lbm_enc_sym(sym_res),
-											make_list(5,
-													lbm_enc_sym(sym_loop),
-													make_list(2, lbm_enc_sym(SYM_CAR), lbm_enc_sym(sym_rst)),
-													make_list(2, lbm_enc_sym(SYM_CDR), lbm_enc_sym(sym_rst)),
-													body,
-													lbm_enc_sym(sym_break))
-											)))),
-											make_list(2,
-													lbm_enc_sym(SYM_CALLCC),
-													make_list(3,
-															lbm_enc_sym(SYM_LAMBDA),
-															make_list(1, lbm_enc_sym(sym_brk)),
-															make_list(5,
-																	lbm_enc_sym(sym_loop),
-																	make_list(2, lbm_enc_sym(SYM_CAR), lst),
-																	make_list(2, lbm_enc_sym(SYM_CDR), lst),
-																	ENC_SYM_NIL,
-																	lbm_enc_sym(sym_brk)))));
 }
 
 static lbm_value ext_uavcan_last_rawcmd(lbm_value *args, lbm_uint argn) {
@@ -5201,6 +5069,18 @@ static lbm_value ext_shutdown_hold(lbm_value *args, lbm_uint argn) {
 	return ENC_SYM_TRUE;
 }
 
+static lbm_value ext_const_heap_erase(lbm_value *args, lbm_uint argn) {
+	(void)args; (void)argn;
+
+	if (lispif_const_heap_max_ind() > 0) {
+		lbm_set_error_reason("Const heap already in use");
+		return ENC_SYM_EERROR;
+	}
+
+	flash_helper_erase_code(CODE_IND_LISP_CONST);
+	return ENC_SYM_TRUE;
+}
+
 
 // Remote Messages
 
@@ -5305,6 +5185,33 @@ static lbm_value ext_pwm_set_duty(lbm_value *args, lbm_uint argn) {
 	return lbm_enc_float(pwm_servo_set_duty(lbm_dec_as_float(args[0])));
 }
 
+static const char* dyn_functions[] = {
+		"(defun uart-read-bytes (buffer n ofs)"
+		"(let ((rd (uart-read buffer n ofs)))"
+		"(if (= rd n)"
+		"(bufset-u8 buffer (+ ofs rd) 0)"
+		"(progn (yield 4000) (uart-read-bytes buffer (- n rd) (+ ofs rd)))"
+		")))",
+
+		"(defun uart-read-until (buffer n ofs end)"
+		"(let ((rd (uart-read buffer n ofs end)))"
+		"(if (and (> rd 0) (or (= rd n) (= (bufget-u8 buffer (+ ofs (- rd 1))) end)))"
+		"(bufset-u8 buffer (+ ofs rd) 0)"
+		"(progn (yield 10000) (uart-read-until buffer (- n rd) (+ ofs rd) end))"
+		")))",
+};
+
+static bool dynamic_loader(const char *str, const char **code) {
+	for (unsigned int i = 0; i < (sizeof(dyn_functions) / sizeof(dyn_functions[0]));i++) {
+		if (strmatch(str, dyn_functions[i] + 7)) {
+			*code = dyn_functions[i];
+			return true;
+		}
+	}
+
+	return lbm_dyn_lib_find(str, code);
+}
+
 void lispif_load_vesc_extensions(void) {
 	lispif_stop_lib();
 
@@ -5335,13 +5242,6 @@ void lispif_load_vesc_extensions(void) {
 	lbm_add_symbol_const("event-shutdown", &sym_event_shutdown);
 	lbm_add_symbol_const("event-icu-width", &sym_event_icu_width);
 	lbm_add_symbol_const("event-icu-period", &sym_event_icu_period);
-
-	lbm_add_symbol_const("a01", &sym_res);
-	lbm_add_symbol_const("a02", &sym_loop);
-	lbm_add_symbol_const("break", &sym_break);
-	lbm_add_symbol_const("a03", &sym_brk);
-	lbm_add_symbol_const("a04", &sym_rst);
-	lbm_add_symbol_const("return", &sym_return);
 
 	memset(&syms_vesc, 0, sizeof(syms_vesc));
 
@@ -5395,6 +5295,7 @@ void lispif_load_vesc_extensions(void) {
 	lbm_add_extension("crc32", ext_crc32);
 	lbm_add_extension("buf-resize", ext_buf_resize);
 	lbm_add_extension("shutdown-hold", ext_shutdown_hold);
+	lbm_add_extension("const-heap-erase", ext_const_heap_erase);
 
 	// APP commands
 	lbm_add_extension("app-adc-detach", ext_app_adc_detach);
@@ -5504,12 +5405,14 @@ void lispif_load_vesc_extensions(void) {
 
 	lbm_add_extension("can-list-devs", ext_can_list_devs);
 	lbm_add_extension("can-scan", ext_can_scan);
+	lbm_add_extension("can-ping", ext_can_ping);
 	lbm_add_extension("can-send-sid", ext_can_send_sid);
 	lbm_add_extension("can-send-eid", ext_can_send_eid);
 	lbm_add_extension("can-recv-sid", ext_can_recv_sid);
 	lbm_add_extension("can-recv-eid", ext_can_recv_eid);
 	lbm_add_extension("can-cmd", ext_can_cmd);
 	lbm_add_extension("can-local-id", ext_can_local_id);
+	lbm_add_extension("can-update-baud", ext_can_update_baud);
 
 	// Math
 	lbm_add_extension("throttle-curve", ext_throttle_curve);
@@ -5560,14 +5463,6 @@ void lispif_load_vesc_extensions(void) {
 	lbm_add_extension("conf-restore-app", ext_conf_restore_app);
 	lbm_add_extension("conf-dc-cal", ext_conf_dc_cal);
 	lbm_add_extension("conf-get-limits", ext_conf_get_limits);
-
-	// Macro expanders
-	lbm_add_extension("me-defun", ext_me_defun);
-	lbm_add_extension("me-defunret", ext_me_defunret);
-	lbm_add_extension("me-loopfor", ext_me_loopfor);
-	lbm_add_extension("me-loopwhile", ext_me_loopwhile);
-	lbm_add_extension("me-looprange", ext_me_looprange);
-	lbm_add_extension("me-loopforeach", ext_me_loopforeach);
 
 	// Native libraries
 	lbm_add_extension("load-native-lib", ext_load_native_lib);
@@ -5621,6 +5516,10 @@ void lispif_load_vesc_extensions(void) {
 	lbm_array_extensions_init();
 	lbm_math_extensions_init();
 	lbm_string_extensions_init();
+	lbm_mutex_extensions_init();
+	lbm_dyn_lib_init();
+
+	lbm_set_dynamic_load_callback(dynamic_loader);
 }
 
 static bool start_flatten_with_gc(lbm_flat_value_t *v, size_t buffer_size) {
