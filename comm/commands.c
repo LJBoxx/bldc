@@ -1340,24 +1340,12 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 
 	case COMM_GET_QML_UI_APP:
 	case COMM_LISP_READ_CODE: {
-		int32_t ind = 0;
-
-		int32_t len_qml = buffer_get_int32(data, &ind);
-		int32_t ofs_qml = buffer_get_int32(data, &ind);
-
-		uint8_t *qmlui_data = flash_helper_code_data(CODE_IND_QML);
-		int32_t qmlui_len = flash_helper_code_size(CODE_IND_QML);
+		
 
 #ifdef QMLUI_SOURCE_APP
 		qmlui_data = data_qml_app;
 		qmlui_len = DATA_QML_APP_SIZE;
 #endif
-
-		if (packet_id == COMM_LISP_READ_CODE) {
-			qmlui_data = flash_helper_code_data(CODE_IND_LISP);
-			qmlui_len = flash_helper_code_size(CODE_IND_LISP);
-		}
-
 		if (!qmlui_data) {
 			ind = 0;
 			uint8_t send_buffer[50];
