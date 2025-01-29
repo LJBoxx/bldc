@@ -1369,11 +1369,6 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		qmlui_len = DATA_QML_APP_SIZE;
 #endif
 
-		if (packet_id == COMM_LISP_READ_CODE) {
-			qmlui_data = flash_helper_code_data(CODE_IND_LISP);
-			qmlui_len = flash_helper_code_size(CODE_IND_LISP);
-		}
-
 		if (!qmlui_data) {
 			ind = 0;
 			uint8_t send_buffer[50];
