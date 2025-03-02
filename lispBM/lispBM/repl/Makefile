@@ -11,7 +11,9 @@ LBMFLAGS = -DFULL_RTS_LIB \
            -DLBM_USE_DYN_LOOPS \
            -DLBM_USE_DYN_FUNS \
            -DLBM_USE_DYN_ARRAYS \
-           -DLBM_USE_DYN_DEFSTRUCT
+           -DLBM_USE_DYN_DEFSTRUCT \
+           -DLBM_USE_TIME_QUOTA \
+           -DLBM_USE_ERROR_LINENO
 
 
 
@@ -25,8 +27,7 @@ LISPBM_SRC += $(LISPBM_EVAL_CPS_SRC)
 REPL_SRC= repl.c \
 	  repl_exts.c \
           crc.c \
-          packet.c \
-          buffer.c
+          packet.c
 
 
 ifdef HEAP_VIS

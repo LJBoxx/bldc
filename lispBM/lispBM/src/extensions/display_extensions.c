@@ -30,24 +30,22 @@
 #define MAX_WIDTH 32000
 #define MAX_HEIGHT 32000
 
-static const uint8_t cos_tab_256[] = {
-  255, 255, 255, 255, 254, 254, 254, 253, 253, 252, 251,
-  250, 250, 249, 248, 246, 245, 244, 243, 241, 240, 238, 237, 235, 234,
-  232, 230, 228, 226, 224, 222, 220, 218, 215, 213, 211, 208, 206, 203,
-  201, 198, 196, 193, 190, 188, 185, 182, 179, 176, 173, 170, 167, 165,
-  162, 158, 155, 152, 149, 146, 143, 140, 137, 134, 131, 127, 124, 121,
-  118, 115, 112, 109, 106, 103, 100, 97, 93, 90, 88, 85, 82, 79, 76, 73,
-  70, 67, 65, 62, 59, 57, 54, 52, 49, 47, 44, 42, 40, 37, 35, 33, 31, 29,
-  27, 25, 23, 21, 20, 18, 17, 15, 14, 12, 11, 10, 9, 7, 6, 5, 5, 4, 3, 2,
-  2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 5, 6, 7, 9, 10,
-  11, 12, 14, 15, 17, 18, 20, 21, 23, 25, 27, 29, 31, 33, 35, 37, 40, 42,
-  44, 47, 49, 52, 54, 57, 59, 62, 65, 67, 70, 73, 76, 79, 82, 85, 88, 90,
-  93, 97, 100, 103, 106, 109, 112, 115, 118, 121, 124, 128, 131, 134, 137,
-  140, 143, 146, 149, 152, 155, 158, 162, 165, 167, 170, 173, 176, 179,
-  182, 185, 188, 190, 193, 196, 198, 201, 203, 206, 208, 211, 213, 215,
-  218, 220, 222, 224, 226, 228, 230, 232, 234, 235, 237, 238, 240, 241,
-  243, 244, 245, 246, 248, 249, 250, 250, 251, 252, 253, 253, 254, 254,
-  254, 255, 255, 255
+// a single quadrant...
+static const uint8_t cos_tab_128[] =
+  {
+   255, 255, 255, 255, 254, 254, 254, 253, 253, 252, // 0 - 9
+   251, 250, 250, 249, 248, 246, 245, 244, 243, 241, //10 - 19
+   240, 238, 237, 235, 234, 232, 230, 228, 226, 224, //20 - 29
+   222, 220, 218, 215, 213, 211, 208, 206, 203, 201, //30 - 39
+   198, 196, 193, 190, 188, 185, 182, 179, 176, 173, //40 - 49
+   170, 167, 165, 162, 158, 155, 152, 149, 146, 143, //50 - 59
+   140, 137, 134, 131, 127, 124, 121, 118, 115, 112, //60 - 69
+   109, 106, 103, 100, 97,  93,  90,  88,  85,  82,  //70 - 79
+   79,  76,  73,  70,  67,  65,  62,  59,  57,  54,  //80 - 89
+   52,  49,  47,  44,  42,  40,  37,  35,  33,  31,  //90 - 99
+   29,  27,  25,  23,  21,  20,  18,  17,  15,  14,  //100 - 109
+   12,  11,  10,  9,   7,   6,   5,   5,   4,   3,   //110 - 119
+   2,   2,   1,   1,   1,   0,   0,   0              //120 - 127
 };
 
 uint32_t lbm_display_rgb888_from_color(color_t color, int x, int y) {
@@ -75,7 +73,7 @@ uint32_t lbm_display_rgb888_from_color(color_t color, int x, int y) {
       tab_pos += used_len;
     }
 
-    uint32_t tab_val = (uint32_t)cos_tab_256[tab_pos];
+    uint32_t tab_val = (uint32_t)cos_tab_128[tab_pos <= 127 ? tab_pos : 128 - (tab_pos - 127)];
 
     uint32_t r = (r1 * tab_val + r2 * (255 - tab_val)) / 255;
     uint32_t g = (g1 * tab_val + g2 * (255 - tab_val)) / 255;
@@ -89,8 +87,6 @@ uint32_t lbm_display_rgb888_from_color(color_t color, int x, int y) {
     return 0;
   }
 }
-
-//static const char *color_desc = "Color";
 
 static lbm_uint symbol_indexed2 = 0;
 static lbm_uint symbol_indexed4 = 0;
@@ -124,7 +120,23 @@ static lbm_uint symbol_repeat_type = 0;
 static lbm_uint symbol_down = 0;
 static lbm_uint symbol_up = 0;
 
-static color_format_t sym_to_color_format(lbm_value v) {
+bool display_is_symbol_up(lbm_value v) {
+  if (lbm_is_symbol(v)) {
+    lbm_uint s = lbm_dec_sym(v);
+    return (s == symbol_up);
+  }
+  return false;
+}
+
+bool display_is_symbol_down(lbm_value v) {
+  if (lbm_is_symbol(v)) {
+    lbm_uint s = lbm_dec_sym(v);
+    return (s == symbol_down);
+  }
+  return false;
+}
+
+color_format_t sym_to_color_format(lbm_value v) {
   lbm_uint s = lbm_dec_sym(v);
   if (s == symbol_indexed2) return indexed2;
   if (s == symbol_indexed4) return indexed4;
@@ -135,7 +147,7 @@ static color_format_t sym_to_color_format(lbm_value v) {
   return format_not_supported;
 }
 
-static uint32_t image_dims_to_size_bytes(color_format_t fmt, uint16_t width, uint16_t height) {
+uint32_t image_dims_to_size_bytes(color_format_t fmt, uint16_t width, uint16_t height) {
   uint32_t num_pix = (uint32_t)width * (uint32_t)height;
   switch(fmt) {
   case indexed2:
@@ -389,8 +401,8 @@ static uint8_t rgb888to332(uint32_t rgb) {
   uint8_t r = (uint8_t)(rgb >> (16 + 5));
   uint8_t g = (uint8_t)(rgb >> (8 + 5));
   uint8_t b = (uint8_t)(rgb >> 6);
-  r = (uint8_t)(r << 5);
-  g = (g & 0x7) << 2;  ;
+  r = (r & 0x7) << 5;
+  g = (g & 0x7) << 2;
   b = (b & 0x3);
   uint8_t res_rgb332 = r | g | b;
   return res_rgb332;
@@ -400,20 +412,57 @@ static uint16_t rgb888to565(uint32_t rgb) {
   uint16_t r = (uint16_t)(rgb >> (16 + 3));
   uint16_t g = (uint16_t)(rgb >> (8 + 2));
   uint16_t b = (uint16_t)(rgb >> 3);
-  r = (uint8_t)(r << 11);
+  r = r << 11;
   g = (g & 0x3F) << 5;
   b = (b & 0x1F);
   uint16_t res_rgb565 = r | g | b;
   return res_rgb565;
 }
 
+// One problem with rgb332 is that
+// if you take 3 most significant bits of 255 you get 7.
+// There is no whole number that you can multiply 7 with to get 255.
+// This is fundamental for any conversion from RGB888 that just uses the
+// N < 8 most significant bits. And it means that conversion to this format
+// and then back to rgb888 will not (without tricks) map highest intensity
+// back to highest intensity.
+//
+// Another issue is that 2 bits (the blue channel) yields steps of 85 (255 / 3)
+// while 3 bits yields steps of 36.4 (255 / 7)
+//
+// 36.4 72.8 109.3 145.7 182.1 218.6 254.99
+//         85          170               255
+//
+// The multiples of 85 never coincide with the multiples of 36.4 except
+// for at 0 and 255
 static uint32_t rgb332to888(uint8_t rgb) {
   uint32_t r = (uint32_t)((rgb>>5) & 0x7);
   uint32_t g = (uint32_t)((rgb>>2) & 0x7);
+
+  // turn 2 bits into 3 having value 0 3 5 or 7
+  // so that 4 points match up when doing greyscale.
   uint32_t b = (uint32_t)(rgb & 0x3);
-  uint32_t res_rgb888 = r << (16 + 5) | g << (8 + 5) | b << 6;
+
+  b = (b > 0) ? (2 * b) + 1 : 0;
+  r = (r == 7) ? 255 : 36 * r; // 36 is an approximation (36.4)
+  g = (g == 7) ? 255 : 36 * g;
+  b = (b == 7) ? 255 : 36 * b;
+  uint32_t res_rgb888 = r << 16 | g << 8 | b;
   return res_rgb888;
 }
+
+// RGB 565
+// 2^5 = 32
+// 2^6 = 64
+// 255 / 31 = 8.226
+// 255 / 63 = 4.18
+//         0   1     2     3     4     5     6     7     8       ...  31   63
+// 5 bits  0   8.226 16.45 24.67 32.9  41.13 49.35 57.58 65.81   ...  254.9
+// 6 bits  0   4.047 8.09  12.14 16.19 20.24 24.29 28.33 32.38      ...    254.9
+//
+// For RGB 565 the 6 and 5 bit channels match up very nicely such
+// index i in the 5 bit channel is equal to index (2 * i) in the 6 bit channel.
+// RGB 565 will have nice grayscales.
 
 static uint32_t  rgb565to888(uint16_t rgb) {
   uint32_t r = (uint32_t)(rgb >> 11);
@@ -483,7 +532,7 @@ static const uint8_t indexed16_mask[4] = {0x0F, 0xF0};
 static const uint8_t indexed16_shift[4] = {0, 4};
 
 
-static void putpixel(image_buffer_t* img, int x_i, int y_i, uint32_t c) {
+void putpixel(image_buffer_t* img, int x_i, int y_i, uint32_t c) {
   uint16_t w = img->width;
   uint16_t h = img->height;
   uint16_t x = (uint16_t)x_i; // negative numbers become really large.
@@ -543,7 +592,7 @@ static void putpixel(image_buffer_t* img, int x_i, int y_i, uint32_t c) {
   }
 }
 
-static uint32_t getpixel(image_buffer_t* img, int x_i, int y_i) {
+uint32_t getpixel(image_buffer_t* img, int x_i, int y_i) {
   uint16_t w = img->width;
   uint16_t h = img->height;
   uint16_t x = (uint16_t)x_i;
@@ -1735,14 +1784,14 @@ static void img_putc(image_buffer_t *img, int x, int y, uint32_t *colors, int nu
   }
 }
 
-static void blit_rot_scale(
-                           image_buffer_t *img_dest,
-                           image_buffer_t *img_src,
-                           int x, int y, // Where on display
-                           float xr, float yr, // Pixel to rotate around
-                           float rot, // Rotation angle in degrees
-                           float scale, // Scale factor
-                           int32_t transparent_color) {
+void blit_rot_scale(
+                    image_buffer_t *img_dest,
+                    image_buffer_t *img_src,
+                    int x, int y, // Where on display
+                    float xr, float yr, // Pixel to rotate around
+                    float rot, // Rotation angle in degrees
+                    float scale, // Scale factor
+                    int32_t transparent_color) {
 
   int src_w = img_src->width;
   int src_h = img_src->height;
@@ -2584,7 +2633,8 @@ static lbm_value ext_text(lbm_value *args, lbm_uint argn) {
   img_buf.data = image_buffer_data((uint8_t*)arr->data);
 
   lbm_array_header_t *font = 0;
-  if (lbm_type_of(args[5]) == LBM_TYPE_ARRAY) {
+  // Allow both const and non-const fonts.
+  if (lbm_type_of_functional(args[argn - 2]) == LBM_TYPE_ARRAY) {
     font = (lbm_array_header_t *)lbm_car(args[argn - 2]);
   }
 
