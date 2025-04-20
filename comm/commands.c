@@ -17,7 +17,6 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#pragma GCC push_options
 #pragma GCC optimize ("Os")
 
 #include "commands.h"
@@ -1956,7 +1955,7 @@ void commands_apply_mcconf_hw_limits(mc_configuration *mcconf) {
 #endif
 }
 
-void commands_init_plot(char *namex, char *namey) {
+void commands_init_plot(const char *namex, const char *namey) {
 	int ind = 0;
 	uint8_t *send_buffer_global = mempools_get_packet_buffer();
 	send_buffer_global[ind++] = COMM_PLOT_INIT;
@@ -1970,7 +1969,7 @@ void commands_init_plot(char *namex, char *namey) {
 	mempools_free_packet_buffer(send_buffer_global);
 }
 
-void commands_plot_add_graph(char *name) {
+void commands_plot_add_graph(const char *name) {
 	int ind = 0;
 	uint8_t *send_buffer_global = mempools_get_packet_buffer();
 	send_buffer_global[ind++] = COMM_PLOT_ADD_GRAPH;
@@ -2492,5 +2491,3 @@ static THD_FUNCTION(blocking_thread, arg) {
 		}
 	}
 }
-
-#pragma GCC pop_options
